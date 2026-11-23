@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How I evaluate a Text2SQL agent · Ankit Khare</title>
+<meta name="description" content="A gold set with traps, a hold-out split you never tune on, grading the answer instead of the SQL, and why the best failure is a refusal. Notes from building Text2SQL agents over an Iceberg lakehouse.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="How I evaluate a Text2SQL agent">
+<meta property="og:description" content="Gold sets with traps, hold-out splits, and why the best failure is a refusal.">
+<meta property="og:url" content="https://ankitkhare.dev/writing/text2sql-evals/">
+<meta property="og:image" content="https://ankitkhare.dev/og.png">
+<link rel="canonical" href="https://ankitkhare.dev/writing/text2sql-evals/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232457d6'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' dominant-baseline='middle' font-family='Arial' font-weight='700' font-size='30' fill='white'%3EAK%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fff;--soft:#f5f7fb;--fg:#0f1b33;--muted:#4f5d7a;--faint:#8692ab;--line:#e3e8f2;--accent:#2457d6;--code:#f1f4fa;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}}
+:root[data-theme="dark"]{--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+header{border-bottom:1px solid var(--line)}
+header .w{display:flex;justify-content:space-between;align-items:center;height:60px}
+header a{color:var(--fg);text-decoration:none;font-weight:700}
+header nav a{color:var(--muted);font-weight:400;margin-left:20px;font-size:15px}
+.w{max-width:720px;margin:0 auto;padding:0 24px}
+article{padding:56px 0 72px}
+.kicker{font:500 13px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:0 0 14px}
+.meta{color:var(--faint);font-size:14px;margin:0 0 36px}
+h2{font-size:23px;letter-spacing:-.01em;margin:44px 0 10px}
+p,li{color:var(--fg)}
+.lede{font-size:19px;color:var(--muted)}
+code{font:14px var(--mono);background:var(--code);padding:2px 6px;border-radius:5px}
+.tbl{overflow-x:auto;margin:18px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+blockquote{margin:22px 0;padding:4px 18px;border-left:3px solid var(--accent);color:var(--muted)}
+.end{margin-top:48px;padding-top:24px;border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+@media (max-width:620px){.w{padding:0 16px} body{font-size:16px} header nav a.hide-sm{display:none}}
+</style>
+</head>
+<body>
+<header><div class="w"><a href="/">Ankit Khare</a><nav><a href="/#work">Work</a><a class="hide-sm" href="/#labs">Labs</a><a href="/Ankit_Khare_Resume.pdf">Resume</a></nav></div></header>
+<main class="w">
+<article>
+<p class="kicker">Notes · LLM evaluation</p>
+<h1>How I evaluate a Text2SQL agent</h1>
+<p class="meta">Ankit Khare · November 2026 · 5 min read</p>
+
+<p class="lede">"It answered my three test questions" is not a measurement. Here is the small, boring setup I use to know whether a Text2SQL agent is actually right, and what it taught me about where these systems fail.</p>
+
+<p>I build Text2SQL systems over an Apache Iceberg lakehouse: one at work, and an open lab, <a href="https://github.com/ankitkhare-joyent/semantic-txt-2-sql">semantic-txt-2-sql</a>, where the same EC2 fleet question gets answered three ways. The agent can go through a semantic layer (Cube), write raw SQL against Trino, or do a hybrid of both. Everything below comes from that lab, so you can rerun it.</p>
+
+<h2>1. Write the truth by hand, and put a trap in it</h2>
+<p>The eval set is a YAML file of questions, each with a hand-written <em>truth SQL</em>. The interesting part is the trap each question sets, because that is where agents go wrong:</p>
+<ul>
+<li><strong>Grain.</strong> The fleet table is a snapshot every two hours. "GPU hours in August" has to multiply each snapshot row by 2. "How many are running now" has to use only the latest snapshot.</li>
+<li><strong>Semi-additive measures.</strong> "Average concurrent instances in May" divides by the number of distinct snapshots, not by rows.</li>
+<li><strong>Business rules.</strong> Cost needs a price book and a 35% spot discount that live in the semantic layer, not in the data.</li>
+<li><strong>Value grounding.</strong> Filters like a team or a region have to match the real spelling in the data.</li>
+<li><strong>Security.</strong> One question asks, as a restricted persona, for rows that persona must never see. The right answer is "denied".</li>
+</ul>
+<p>Eleven questions is a teaching set, not a benchmark. That is fine. Each one exists because it catches a specific mistake.</p>
+
+<h2>2. Grade the answer, not the SQL</h2>
+<p>Two correct queries rarely look alike, so comparing SQL strings is useless. The runner computes the truth on Trino as an admin, asks the agent, and grades the <em>value</em> it submits: within 0.5% relative tolerance, or an absolute tolerance for small numbers. Every step the agent took goes into a <code>.jsonl</code> trace, so when something fails I read the trace before blaming the model. Sometimes the truth SQL is the thing that is wrong.</p>
+
+<h2>3. Keep a hold-out set you never tune on</h2>
+<p>This is the lesson I learned the hard way. Once you start fixing prompts, table notes and column comments to make failing questions pass, your eval set stops measuring the agent. It starts measuring how well you fit the eval set. On the system I run at work, accuracy on the questions I had tuned against was several points higher than on a held-out set of questions over tables the prompts never mentioned.</p>
+<p>So now every eval set has a hold-out slice with two rules: no question in it is ever used to change a prompt, and no ID or value from it appears in the notes. I report both numbers, side by side. The hold-out number is the one I believe.</p>
+
+<h2>4. What the lab showed</h2>
+<p>One run, Claude Opus 5.5, medium effort, all eleven questions in each mode:</p>
+<div class="tbl"><table>
+<tr><th>Mode</th><th>Accuracy</th><th>Avg seconds</th><th>Tool calls</th><th>Output tokens</th></tr>
+<tr><td>Semantic layer</td><td>11/11</td><td>7.7</td><td>1.3</td><td>341</td></tr>
+<tr><td>Raw SQL</td><td>10/11</td><td>12.5</td><td>2.5</td><td>858</td></tr>
+<tr><td>Hybrid</td><td>11/11</td><td>6.0</td><td>1.4</td><td>382</td></tr>
+</table></div>
+<p>Three things stood out.</p>
+<p><strong>The model is good at SQL now.</strong> With a flat, documented fact table, raw SQL handled every grain trap. Most of the credit goes to the lakehouse doing its part: column docs, one clean fact table. On a raw fifteen-table normalised schema I would expect it to drop sharply.</p>
+<p><strong>Raw SQL cannot know what is not in the data.</strong> The one miss was the cost question, because the price book lives only in the semantic layer. And the model refused rather than inventing prices, then reported what it could measure. That is the failure you want. It came from one line in the system prompt telling the agent to say when the data cannot answer. Remove that line and you get a confident, made-up number.</p>
+<p><strong>The semantic path is cheaper.</strong> Half the tool calls and less than half the output tokens, because the model picks measures instead of writing, checking and fixing SQL. Hybrid behaved like semantic mode on every question while keeping SQL available for anything outside the model, which is why I would ship hybrid.</p>
+
+<h2>5. Guardrails belong in the eval</h2>
+<p>The security question passed in every mode: Cube's access policy blocked it in semantic mode, Trino's row filter in SQL mode. I treat that as a test, not a feature. In production I also run every generated query through a <code>sqlglot</code> guard before it reaches the engine, and protect sensitive columns with policies that fail closed. If a guardrail is not in the eval set, you find out it broke from a user.</p>
+
+<h2>6. Caveats, before anyone quotes the numbers</h2>
+<ul>
+<li><strong>One trial is not enough.</strong> LLM output varies between runs. Run each question several times and look at the spread, not just the mean.</li>
+<li><strong>Grow the set from real failures.</strong> Every question a user asks that the agent got wrong becomes a new case. A good eval set is a log of your mistakes.</li>
+<li><strong>Watch the cost columns too.</strong> Accuracy is not the only metric. Latency and tokens decide whether people keep using it.</li>
+</ul>
+
+<blockquote>If you only take one thing: keep a hold-out set, report it next to your tuned number, and trust the lower one.</blockquote>
+
+<p class="end">The full lab, with the eval runner, golden questions and traces, is on GitHub: <a href="https://github.com/ankitkhare-joyent/semantic-txt-2-sql">semantic-txt-2-sql</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
+</article>
+</main>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "efa192f960c1415eb85b5a919f7d6ba8"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

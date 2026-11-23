@@ -17,7 +17,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"Person","name":"Ankit Khare","url":"https://ankitkhare.dev","jobTitle":"Data Platform Technical Lead","worksFor":{"@type":"Organization","name":"Joyent (Samsung Cloud)"},"address":{"@type":"PostalAddress","addressLocality":"San Jose","addressRegion":"CA"},"alumniOf":"Syracuse University","sameAs":["https://www.linkedin.com/in/ankitkhare97","https://github.com/ankitkhare-joyent"]}
+{"@context":"https://schema.org","@type":"Person","name":"Ankit Khare","url":"https://ankitkhare.dev","email":"mailto:ankit@ankitkhare.dev","jobTitle":"Data Platform Technical Lead","worksFor":{"@type":"Organization","name":"Joyent (Samsung Cloud)"},"address":{"@type":"PostalAddress","addressLocality":"San Jose","addressRegion":"CA"},"alumniOf":"Syracuse University","sameAs":["https://www.linkedin.com/in/ankitkhare97","https://github.com/ankitkhare-joyent"]}
 </script>
 <style>
 :root{
@@ -110,7 +110,7 @@ footer .links a{overflow-wrap:anywhere}
 <body>
 <header class="nav"><div class="wrap">
   <a class="brand" href="#top">Ankit Khare</a>
-  <nav><a href="#work">Work</a><a href="#labs">Labs</a><a class="hide-sm" href="#experience">Experience</a><a href="Ankit_Khare_Resume.pdf">Resume</a></nav>
+  <nav><a href="#work">Work</a><a href="#labs">Labs</a><a href="#writing">Writing</a><a class="hide-sm" href="#experience">Experience</a><a href="Ankit_Khare_Resume.pdf">Resume</a></nav>
 </div></header>
 
 <main id="top">
@@ -123,7 +123,7 @@ footer .links a{overflow-wrap:anywhere}
     <a class="btn primary" href="Ankit_Khare_Resume.pdf">Download resume</a>
     <a class="btn" href="https://www.linkedin.com/in/ankitkhare97">LinkedIn</a>
     <a class="btn" href="https://github.com/ankitkhare-joyent">GitHub</a>
-    <a class="btn" href="mailto:ankitkhare57@gmail.com">Email</a>
+    <a class="btn" href="mailto:ankit@ankitkhare.dev">Email</a>
   </div>
   <p class="meta">San Jose, CA · Python, Go, SQL, TypeScript</p>
 </div></div>
@@ -140,8 +140,8 @@ footer .links a{overflow-wrap:anywhere}
     </div>
     <div class="card">
       <h3>Iceberg lakehouse</h3>
-      <p>Spark ETL and Airflow 3 DAGs loading EC2, VPC, IAM, DCIM, ServiceNow, Jira and PagerDuty data, served by a FastAPI and Ray Serve API that also backs the team's MCP server.</p>
-      <div class="stat">19.3 s → 2.1 s</div><div class="stat-l">43M-row MERGE after partition-scoped planning</div>
+      <p>Spark ETL and Airflow 3 DAGs loading EC2, VPC, IAM, DCIM, ServiceNow, Jira and PagerDuty data. I consolidated the per-table jobs into a few parameterized ones (185 to 97 DAG files), served by a FastAPI and Ray Serve API that also backs the team's MCP server.</p>
+      <div class="stat">2-3 h → minutes</div><div class="stat-l">full refresh after consolidation; now runs hourly</div>
       <div class="tags"><span class="tag">Spark</span><span class="tag">Iceberg</span><span class="tag">Trino</span><span class="tag">DuckDB</span></div>
     </div>
     <div class="card">
@@ -168,7 +168,15 @@ footer .links a{overflow-wrap:anywhere}
   </div>
 </div></section>
 
-<section id="experience"><div class="wrap">
+<section id="writing"><div class="wrap">
+  <h2>Writing</h2>
+  <p class="sub">Notes from building data and AI systems.</p>
+  <div class="grid g2">
+    <a class="card" href="/writing/text2sql-evals/"><span class="repo">November 2026 · 5 min read</span><h3>How I evaluate a Text2SQL agent</h3><p>Gold sets with traps, a hold-out split you never tune on, grading the answer instead of the SQL, and why the best failure is a refusal.</p></a>
+  </div>
+</div></section>
+
+<section id="experience" class="alt"><div class="wrap">
   <h2>Experience</h2>
   <p class="sub">Joyent, Inc. (Samsung Cloud), Sunnyvale, CA</p>
   <ul class="timeline">
@@ -179,7 +187,7 @@ footer .links a{overflow-wrap:anywhere}
   </ul>
 </div></section>
 
-<section class="alt"><div class="wrap">
+<section><div class="wrap">
   <h2>Toolbox</h2>
   <p class="sub">What I reach for day to day.</p>
   <dl class="skills">
@@ -194,9 +202,10 @@ footer .links a{overflow-wrap:anywhere}
 
 <footer><div class="wrap">
   <div class="row">
-    <div class="links"><a href="mailto:ankitkhare57@gmail.com">ankitkhare57@gmail.com</a><a href="https://www.linkedin.com/in/ankitkhare97">LinkedIn</a><a href="https://github.com/ankitkhare-joyent">GitHub</a></div>
+    <div class="links"><a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a><a href="https://www.linkedin.com/in/ankitkhare97">LinkedIn</a><a href="https://github.com/ankitkhare-joyent">GitHub</a></div>
     <div class="small">© 2026 Ankit Khare</div>
   </div>
 </div></footer>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "efa192f960c1415eb85b5a919f7d6ba8"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
