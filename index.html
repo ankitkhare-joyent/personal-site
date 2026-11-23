@@ -140,7 +140,7 @@ footer .links a{overflow-wrap:anywhere}
     </div>
     <div class="card">
       <h3>Iceberg lakehouse</h3>
-      <p>Spark ETL and Airflow 3 DAGs loading EC2, VPC, IAM, DCIM, ServiceNow, Jira and PagerDuty data. I consolidated the per-table jobs into a few parameterized ones (185 to 97 DAG files), served by a FastAPI and Ray Serve API that also backs the team's MCP server.</p>
+      <p>Spark ETL and Airflow 3 DAGs loading EC2, VPC, IAM, DCIM, ServiceNow, Jira and PagerDuty data. I consolidated the per-table jobs into a few parameterized ones (185 to 97 DAG files) and moved our Snowflake history and pipelines onto it, about $3,700 a month saved. A FastAPI and Ray Serve API serves it and backs the team's MCP server.</p>
       <div class="stat">2-3 h → minutes</div><div class="stat-l">full refresh after consolidation; now runs hourly</div>
       <div class="tags"><span class="tag">Spark</span><span class="tag">Iceberg</span><span class="tag">Trino</span><span class="tag">DuckDB</span></div>
     </div>
@@ -185,7 +185,7 @@ footer .links a{overflow-wrap:anywhere}
   <h2>Experience</h2>
   <p class="sub">Joyent, Inc. (Samsung Cloud), Sunnyvale, CA</p>
   <ul class="timeline">
-    <li><span class="role">Data Platform Technical Lead</span><span class="when">Nov 2026 - Present</span><div class="org">Lead the data platform team: the managed Spark service and the Internal Analytics lakehouse and APIs.</div></li>
+    <li><span class="role">Data Platform Technical Lead</span><span class="when">Nov 2026 - Present</span><div class="org">Lead the data platform team: the managed Spark service and the Internal Analytics lakehouse and APIs. Moved 59 GB of Snowflake history and its ETL onto our self-hosted stack, saving about $3,700 a month.</div></li>
     <li><span class="role">Senior Data Platform Engineer</span><span class="when">Feb 2024 - Nov 2026</span><div class="org">Built the Iceberg lakehouse, its REST API and the Text2SQL work; ran on-call and moved CI/CD to GitHub Actions.</div></li>
     <li><span class="role">Generalist Engineer</span><span class="when">Aug 2021 - Feb 2024</span><div class="org">Joined the managed Spark service in its first month; before that, tooling for Joyent's storage cluster.</div></li>
     <li><span class="role">M.S., Computer Science</span><span class="when">2019 - 2021</span><div class="org">Syracuse University. B.Tech., SRM Institute of Science and Technology. Best Paper Award, ICIOT 2019.</div></li>
