@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs · Ankit Khare</title>
+<meta name="description" content="How folding one-Spark-job-per-table into a few config-driven jobs, and running ETL on the ingestion&#x27;s schedule, took a lakehouse refresh from 2-3 hours to minutes.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs">
+<meta property="og:description" content="How folding one-Spark-job-per-table into a few config-driven jobs, and running ETL on the ingestion&#x27;s schedule, took a lakehouse refresh from 2-3 hours to minutes.">
+<meta property="og:url" content="https://ankitkhare.dev/writing/consolidating-spark-jobs/">
+<meta property="og:image" content="https://ankitkhare.dev/og.png">
+<link rel="canonical" href="https://ankitkhare.dev/writing/consolidating-spark-jobs/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232457d6'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' dominant-baseline='middle' font-family='Arial' font-weight='700' font-size='30' fill='white'%3EAK%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fff;--soft:#f5f7fb;--fg:#0f1b33;--muted:#4f5d7a;--faint:#8692ab;--line:#e3e8f2;--accent:#2457d6;--code:#f1f4fa;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}}
+:root[data-theme="dark"]{--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+header{border-bottom:1px solid var(--line)}
+header .w{display:flex;justify-content:space-between;align-items:center;height:60px}
+header a{color:var(--fg);text-decoration:none;font-weight:700}
+header nav a{color:var(--muted);font-weight:400;margin-left:20px;font-size:15px}
+.w{max-width:720px;margin:0 auto;padding:0 24px}
+article{padding:56px 0 72px}
+.kicker{font:500 13px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:0 0 14px}
+.meta{color:var(--faint);font-size:14px;margin:0 0 36px}
+h2{font-size:23px;letter-spacing:-.01em;margin:44px 0 10px}
+p,li{color:var(--fg)}
+.lede{font-size:19px;color:var(--muted)}
+code{font:14px var(--mono);background:var(--code);padding:2px 6px;border-radius:5px}
+.tbl{overflow-x:auto;margin:18px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+blockquote{margin:22px 0;padding:4px 18px;border-left:3px solid var(--accent);color:var(--muted)}
+.end{margin-top:48px;padding-top:24px;border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+@media (max-width:620px){.w{padding:0 16px} body{font-size:16px} header nav a.hide-sm{display:none}}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;margin:18px 0}
+pre code{background:none;padding:0;font-size:13.5px;line-height:1.55}
+ol li{margin-bottom:4px}
+</style>
+</head>
+<body>
+<header><div class="w"><a href="/">Ankit Khare</a><nav><a href="/#work">Work</a><a class="hide-sm" href="/#labs">Labs</a><a href="/Ankit_Khare_Resume.pdf">Resume</a></nav></div></header>
+<main class="w">
+<article>
+<p class="kicker">Notes · Data engineering</p>
+<h1>185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs</h1>
+<p class="meta">Ankit Khare · November 2026 · 4 min read</p>
+
+<p class="lede">Nobody asked for this one. Our lakehouse refresh took two to three hours, and every new table meant copying another Spark job and another Airflow DAG. Over five weeks I folded those per-table jobs into a few config-driven ones. A full refresh now takes minutes, and runs every hour.</p>
+
+<h2>How it got that way</h2>
+<p>The lakehouse at work loads infrastructure inventory into Apache Iceberg: EC2, VPC and IAM data from our cloud's admin APIs, plus monitoring, configuration management and data-center sources. It grew one table at a time, and the easy way to add a table was to copy the last one. So each output table had its own Spark application and its own DAG. VPC alone had 25 separate flatten applications. EC2 had 14.</p>
+<p>Each of those applications started its own driver and executors, listed the same S3 prefixes, read the same source Parquet, and wrote one table. Most of the runtime was that overhead, repeated a few hundred times. The jobs also ran on fixed schedules that had nothing to do with when new data landed, so plenty of runs reprocessed data that had not changed.</p>
+<p>The maintenance cost was just as bad. A fix to how we parse timestamps meant the same edit in 25 files, and reviewing it meant reading all 25.</p>
+
+<h2>The design</h2>
+<p>One application per source, with a registry of datasets. A dataset is just its source folder, a transform onto its output schema, and its merge keys:</p>
+<pre><code>DATASETS = {
+    "subnets": Dataset(source="DescribeSubnets", schema=SUBNETS,
+                       merge_keys=["subnet_id", "region"], sql=SUBNETS_SQL),
+    "route_tables": Dataset(...),
+    # 25 in all for VPC
+}
+
+def run(spark, datasets, max_parallel=4):
+    def one(ds):
+        s = spark.newSession()          # its own temp views and conf
+        dates = dates_behind(s, ds)     # per table: a current table is skipped
+        if not dates:
+            return
+        df = transform(s, ds, read_source(s, ds.source, dates))
+        assert_schema(df, ds.schema)    # before anything is written
+        merge(s, df, ds.merge_keys, dates)
+
+    with ThreadPoolExecutor(max_parallel) as pool:
+        results = {name: pool.submit(one, ds) for name, ds in datasets.items()}
+    failed = [n for n, f in results.items() if f.exception()]
+    if failed:
+        raise RuntimeError(f"datasets failed: {failed}")</code></pre>
+<p>A few decisions did most of the work:</p>
+<ul>
+<li><strong>Dates are worked out per table.</strong> A table that is current is skipped, and one that is behind catches up in the same run. The job only lists and reads the source folders that some table actually needs.</li>
+<li><strong>Datasets run in parallel, each in its own Spark session.</strong> <code>spark.newSession()</code> gives each dataset its own temp views and conf, which is what makes concurrent Iceberg MERGEs from one application safe. <code>spark.scheduler.mode=FAIR</code> lets the concurrent stages share executors.</li>
+<li><strong>Schemas are checked before any write.</strong> The output schemas are imported unchanged from the old jobs and asserted during query analysis. Same tables, same partitioning, same merge keys, so nothing downstream had to change.</li>
+<li><strong>No driver actions on the hot path.</strong> No <code>count()</code>, <code>collect()</code> or <code>isEmpty()</code> before the write. The only pre-run work is listing S3 prefixes and analysing the queries.</li>
+<li><strong>One bad dataset does not stop the rest.</strong> Failures are collected, the others finish, and the job fails at the end with a summary.</li>
+</ul>
+
+<h2>Run when the data lands</h2>
+<p>The second half of the change was cadence. Ingestion writes new files on a known schedule, so each DAG now runs just after its source lands, instead of hourly or daily out of habit. Each run covers whatever range of dates is behind, rather than Airflow scheduling one run per missed interval. After a pause there is one catch-up run, not a queue of them.</p>
+<p>With the jobs cheap enough, I added hour-level partitions for the EC2, VPC and IAM tables and moved them to hourly runs, with Iceberg maintenance (expiring snapshots, compacting small files) in its own daily job instead of inline.</p>
+
+<h2>Rolling it out</h2>
+<p>Four pull requests between September 10 and October 16: EC2 and VPC first, then hourly partitions and IAM, then the monitoring sources together with the cadence change, then configuration-management inventory, which also let me delete a set of aggregation DAGs. Doing it source by source meant each cut-over was small enough to check table by table.</p>
+
+<h2>Results</h2>
+<div class="tbl"><table>
+<tr><th></th><th>Before</th><th>After</th></tr>
+<tr><td>Airflow DAG files</td><td>185</td><td>97</td></tr>
+<tr><td>Spark job modules</td><td>364</td><td>266</td></tr>
+<tr><td>Lines of code</td><td colspan="2">about 41K fewer (68K deleted, 27K added)</td></tr>
+<tr><td>Full refresh</td><td>2-3 hours</td><td>minutes</td></tr>
+<tr><td>Freshness</td><td>a few runs a day</td><td>hourly</td></tr>
+</table></div>
+
+<h2>What I'd tell someone about to do the same</h2>
+<ul>
+<li><strong>Look at overhead before you add executors.</strong> Our jobs were not slow because the work was big. They were slow because the same start-up, listing and reading happened hundreds of times.</li>
+<li><strong>A shared job has a shared blast radius.</strong> A bug in one transform can now break 25 tables, so the schema check and per-dataset isolation are not optional extras.</li>
+<li><strong>Keep the outputs identical.</strong> Holding schemas, partitions and merge keys fixed turned a scary refactor into a mechanical one.</li>
+<li><strong>Log what the source does not have.</strong> A few fields the old jobs populated were not in the flattened source at all. They are listed in the code and logged every run, instead of quietly turning into nulls.</li>
+</ul>
+
+<p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
+</article>
+</main>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "efa192f960c1415eb85b5a919f7d6ba8"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

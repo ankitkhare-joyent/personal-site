@@ -172,6 +172,11 @@ footer .links a{overflow-wrap:anywhere}
   <h2>Writing</h2>
   <p class="sub">Notes from building data and AI systems.</p>
   <div class="grid g2">
+    <a class="card" href="/writing/consolidating-spark-jobs/"><span class="repo">November 2026 · 4 min read</span><h3>185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs</h3><p>One Spark job per table had turned a lakehouse refresh into a 2-3 hour wait. Folding them into a few config-driven jobs took it to minutes.</p></a>
+    <a class="card" href="/writing/iceberg-merge-pruning/"><span class="repo">November 2026 · 3 min read</span><h3>Why my Iceberg MERGE read 930 million rows to write 316 thousand</h3><p>The MERGE condition matched on year, month and day, so it looked partition-scoped. Spark only prunes on that at runtime, and only sometimes.</p></a>
+    <a class="card" href="/writing/spark-pushdown-assertion/"><span class="repo">November 2026 · 3 min read</span><h3>A Spark 3.5 optimizer crash that a cache was hiding</h3><p>An internal Spark error on every retry, from a nullif() join key. A persist() had hidden it, and unit tests on in-memory frames could never catch it.</p></a>
+    <a class="card" href="/writing/ignore-corrupt-files/"><span class="repo">November 2026 · 3 min read</span><h3>ignoreCorruptFiles turned a network blip into a missing day</h3><p>Backfills kept missing days and every run said OK. A Spark option meant for damaged files was skipping good files on transient errors.</p></a>
+    <a class="card" href="/writing/pagerduty-ingestion/"><span class="repo">November 2026 · 3 min read</span><h3>Ingesting 10,000 PagerDuty incidents without fighting Spark</h3><p>A per-incident API crawl took up to two hours, then the first full run broke Spark&#x27;s 128 MB message limit. Bulk endpoints, a self-check and less Spark fixed both.</p></a>
     <a class="card" href="/writing/text2sql-evals/"><span class="repo">November 2026 · 5 min read</span><h3>How I evaluate a Text2SQL agent</h3><p>Gold sets with traps, a hold-out split you never tune on, grading the answer instead of the SQL, and why the best failure is a refusal.</p></a>
   </div>
 </div></section>

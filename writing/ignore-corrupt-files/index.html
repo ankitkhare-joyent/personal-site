@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ignoreCorruptFiles turned a network blip into a missing day · Ankit Khare</title>
+<meta name="description" content="A Spark read option meant for damaged files was silently skipping files on transient S3 errors and schema drift, and a MERGE-based load made the gap invisible.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="ignoreCorruptFiles turned a network blip into a missing day">
+<meta property="og:description" content="A Spark read option meant for damaged files was silently skipping files on transient S3 errors and schema drift, and a MERGE-based load made the gap invisible.">
+<meta property="og:url" content="https://ankitkhare.dev/writing/ignore-corrupt-files/">
+<meta property="og:image" content="https://ankitkhare.dev/og.png">
+<link rel="canonical" href="https://ankitkhare.dev/writing/ignore-corrupt-files/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232457d6'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' dominant-baseline='middle' font-family='Arial' font-weight='700' font-size='30' fill='white'%3EAK%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fff;--soft:#f5f7fb;--fg:#0f1b33;--muted:#4f5d7a;--faint:#8692ab;--line:#e3e8f2;--accent:#2457d6;--code:#f1f4fa;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}}
+:root[data-theme="dark"]{--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+header{border-bottom:1px solid var(--line)}
+header .w{display:flex;justify-content:space-between;align-items:center;height:60px}
+header a{color:var(--fg);text-decoration:none;font-weight:700}
+header nav a{color:var(--muted);font-weight:400;margin-left:20px;font-size:15px}
+.w{max-width:720px;margin:0 auto;padding:0 24px}
+article{padding:56px 0 72px}
+.kicker{font:500 13px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:0 0 14px}
+.meta{color:var(--faint);font-size:14px;margin:0 0 36px}
+h2{font-size:23px;letter-spacing:-.01em;margin:44px 0 10px}
+p,li{color:var(--fg)}
+.lede{font-size:19px;color:var(--muted)}
+code{font:14px var(--mono);background:var(--code);padding:2px 6px;border-radius:5px}
+.tbl{overflow-x:auto;margin:18px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+blockquote{margin:22px 0;padding:4px 18px;border-left:3px solid var(--accent);color:var(--muted)}
+.end{margin-top:48px;padding-top:24px;border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+@media (max-width:620px){.w{padding:0 16px} body{font-size:16px} header nav a.hide-sm{display:none}}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;margin:18px 0}
+pre code{background:none;padding:0;font-size:13.5px;line-height:1.55}
+ol li{margin-bottom:4px}
+</style>
+</head>
+<body>
+<header><div class="w"><a href="/">Ankit Khare</a><nav><a href="/#work">Work</a><a class="hide-sm" href="/#labs">Labs</a><a href="/Ankit_Khare_Resume.pdf">Resume</a></nav></div></header>
+<main class="w">
+<article>
+<p class="kicker">Notes · Data quality</p>
+<h1>ignoreCorruptFiles turned a network blip into a missing day</h1>
+<p class="meta">Ankit Khare · November 2026 · 3 min read</p>
+
+<p class="lede">Backfills of our data-center inventory kept coming back with holes: a day of VMs here, three days of interconnects there. Every run reported success. Rerunning a single day loaded it in full. That combination is the signature of a silent skip.</p>
+
+<h2>Where the rows went</h2>
+<p>Our shared Parquet read helper set Spark's <code>ignoreCorruptFiles</code> option to true by default. The option exists so one damaged file does not fail a large read. What it actually does is broader: any exception while reading a file, including a transient S3 error, makes Spark skip that file and carry on.</p>
+<p>A range backfill reads many files at once, so it is the most likely to hit a transient error. The file for that day was skipped, the day had no source rows, and the load did exactly what an Iceberg <code>MERGE</code> does with no rows: nothing. The table kept its old contents for that day, the job went green, and nobody knew.</p>
+
+<h2>The second cause, found on the way</h2>
+<p>One export changed format: a wider, 438-column version of the file wrote an integer column as <code>INT64</code>, where the job declares a 32-bit <code>IntegerType</code>. On the cluster Spark could not convert it, treated the file as unreadable, and skipped it. That day loaded <strong>0 of 273,590 rows</strong>, again with a green run.</p>
+
+<h2>The fix</h2>
+<ul>
+<li><strong>Turn the option off for this source.</strong> With <code>ignoreCorruptFiles</code> false, Spark retries the task, and a failure that persists fails the run with the file path in the error.</li>
+<li><strong>Read each file with its own integer widths.</strong> The job takes the column types from each file's Parquet footer, reads with those, and then casts to the declared schema. Any other type mismatch still fails the read, on purpose.</li>
+<li><strong>Count rows per day.</strong> The job logs the number of source rows for every requested day and warns on a day whose file has none. It costs almost nothing and would have caught both problems on the first run.</li>
+<li><strong>A test that fails on the old setting.</strong> It writes an unreadable file into a test folder and checks that the read fails instead of returning fewer rows.</li>
+</ul>
+<pre><code>df = (spark.read
+      .option("ignoreCorruptFiles", "false")   # fail loudly; Spark retries transient errors
+      .parquet(*paths_for(dates)))
+
+per_day = df.groupBy("year", "month", "day").count().collect()
+for d in dates:
+    if rows_for(per_day, d) == 0:
+        log.warning("no source rows for %s", d)</code></pre>
+
+<h2>Takeaways</h2>
+<ul>
+<li><strong>Any flag that turns errors into skips is a data-loss switch.</strong> <code>ignoreCorruptFiles</code>, <code>ignoreMissingFiles</code>, permissive parse modes. Know which of your reads have them on, and why.</li>
+<li><strong>Upserts hide missing input.</strong> With a MERGE, no rows means no change, which looks the same as "nothing new happened." Append-only loads at least show a gap.</li>
+<li><strong>Green is not the same as complete.</strong> A cheap per-partition row count in the logs is the difference between finding this in a day and finding it when someone asks why a chart has a dip.</li>
+</ul>
+
+<p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
+</article>
+</main>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "efa192f960c1415eb85b5a919f7d6ba8"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

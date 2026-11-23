@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Spark 3.5 optimizer crash that a cache was hiding · Ankit Khare</title>
+<meta name="description" content="An AssertionError in Spark 3.5.1&#x27;s predicate pushdown, triggered by nullif() join keys, hidden by persist(), and missed by unit tests that never touched Iceberg.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="A Spark 3.5 optimizer crash that a cache was hiding">
+<meta property="og:description" content="An AssertionError in Spark 3.5.1&#x27;s predicate pushdown, triggered by nullif() join keys, hidden by persist(), and missed by unit tests that never touched Iceberg.">
+<meta property="og:url" content="https://ankitkhare.dev/writing/spark-pushdown-assertion/">
+<meta property="og:image" content="https://ankitkhare.dev/og.png">
+<link rel="canonical" href="https://ankitkhare.dev/writing/spark-pushdown-assertion/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232457d6'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' dominant-baseline='middle' font-family='Arial' font-weight='700' font-size='30' fill='white'%3EAK%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fff;--soft:#f5f7fb;--fg:#0f1b33;--muted:#4f5d7a;--faint:#8692ab;--line:#e3e8f2;--accent:#2457d6;--code:#f1f4fa;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}}
+:root[data-theme="dark"]{--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+header{border-bottom:1px solid var(--line)}
+header .w{display:flex;justify-content:space-between;align-items:center;height:60px}
+header a{color:var(--fg);text-decoration:none;font-weight:700}
+header nav a{color:var(--muted);font-weight:400;margin-left:20px;font-size:15px}
+.w{max-width:720px;margin:0 auto;padding:0 24px}
+article{padding:56px 0 72px}
+.kicker{font:500 13px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:0 0 14px}
+.meta{color:var(--faint);font-size:14px;margin:0 0 36px}
+h2{font-size:23px;letter-spacing:-.01em;margin:44px 0 10px}
+p,li{color:var(--fg)}
+.lede{font-size:19px;color:var(--muted)}
+code{font:14px var(--mono);background:var(--code);padding:2px 6px;border-radius:5px}
+.tbl{overflow-x:auto;margin:18px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+blockquote{margin:22px 0;padding:4px 18px;border-left:3px solid var(--accent);color:var(--muted)}
+.end{margin-top:48px;padding-top:24px;border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+@media (max-width:620px){.w{padding:0 16px} body{font-size:16px} header nav a.hide-sm{display:none}}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;margin:18px 0}
+pre code{background:none;padding:0;font-size:13.5px;line-height:1.55}
+ol li{margin-bottom:4px}
+</style>
+</head>
+<body>
+<header><div class="w"><a href="/">Ankit Khare</a><nav><a href="/#work">Work</a><a class="hide-sm" href="/#labs">Labs</a><a href="/Ankit_Khare_Resume.pdf">Resume</a></nav></div></header>
+<main class="w">
+<article>
+<p class="kicker">Notes · Debugging Spark</p>
+<h1>A Spark 3.5 optimizer crash that a cache was hiding</h1>
+<p class="meta">Ankit Khare · November 2026 · 3 min read</p>
+
+<p class="lede">A production table started failing on every retry with an error that looked like it belonged to someone else: an internal assertion inside Spark's optimizer. The cause was a perfectly reasonable join key, and a cache had been hiding it.</p>
+
+<h2>The error</h2>
+<pre><code>[INTERNAL_ERROR] The Spark SQL phase optimization failed with an internal error.
+java.lang.AssertionError ... at PushablePredicate ... V2ScanRelationPushDown</code></pre>
+<p>It came from a job that builds a dimension table out of several reference views over Iceberg. Retries did not help, and nothing in our code was in the stack trace.</p>
+
+<h2>What was actually happening</h2>
+<p>The reference views were keyed on <code>nullif(trim(id), '')</code>, so blank IDs became NULL and joined to nothing. That is a common idiom and it was correct. The trouble was what Spark did with it:</p>
+<ol>
+<li>For an inner join, Spark infers <code>key IS NOT NULL</code> on both sides.</li>
+<li>It pushes that predicate down, through a <code>max_by</code> aggregate, toward the Iceberg scan.</li>
+<li>Spark 3.5.1 simplifies <code>IsNotNull(nullif(...))</code> into a top-level <code>If</code> expression.</li>
+<li>The translation from Catalyst filters to data source V2 filters asserts that every predicate it is handed can be translated. That <code>If</code> cannot, so the optimizer crashes.</li>
+</ol>
+<p>Why only now? An upstream <code>persist()</code> meant later plans reused the cached result instead of planning the pushdown again. When an unrelated change made the plans stop matching the cached ones, every run planned the pushdown, and every run failed.</p>
+
+<h2>The fix</h2>
+<p>Key the views on <code>trim(id)</code> instead. Blank keys now group under <code>''</code> rather than NULL, and they still join to nothing, because every column they are compared with is itself <code>nullif</code>'d. I reproduced it with PySpark 3.5.1 and Iceberg 1.5.2 using the real views: the old code fails without the cache, and the new code passes with and without it, with the same output.</p>
+
+<h2>It came back ten days later</h2>
+<p>A different job hit the same assertion from filters on Iceberg reads:</p>
+<pre><code>-- before: not translatable to a V2 filter
+NULLIF(TRIM(service_name), '') IS NOT NULL
+NOT COALESCE(is_deleted, false)
+
+-- after: same meaning, plain pushable predicates
+service_name IS NOT NULL AND TRIM(service_name) &lt;&gt; ''
+NOT (is_deleted &lt;=&gt; true)</code></pre>
+<p>This time the more interesting fix was the test. All of that job's tests ran on in-memory DataFrames, where nothing is pushed down to a data source, so they could never see this class of bug. I added a test that runs the job's SQL against real local Iceberg tables. It fails on the old code with the same <code>AssertionError</code> and passes on the new code.</p>
+
+<h2>Takeaways</h2>
+<ul>
+<li><strong>Filters on a scan should be boring.</strong> Plain columns, comparisons, <code>IS NULL</code>, <code>IN</code>. Wrap the clever expressions around the result, not inside the predicate the optimizer will try to push down.</li>
+<li><strong>A cache can hide a planner bug.</strong> If something fails "suddenly" after an unrelated change, check whether a <code>persist()</code> used to short-circuit the plan.</li>
+<li><strong>Test against the real format.</strong> In-memory DataFrames skip pushdown, file pruning and the data source's own rules. One test on real Iceberg tables catches what a hundred in-memory ones cannot.</li>
+<li><strong>Reproduce before you guard.</strong> Wrapping the job in a retry or a try/except would have hidden this again. Pinning the exact versions and the real views turned an "internal error" into a one-line fix.</li>
+</ul>
+
+<p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
+</article>
+</main>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "efa192f960c1415eb85b5a919f7d6ba8"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

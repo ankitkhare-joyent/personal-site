@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why my Iceberg MERGE read 930 million rows to write 316 thousand · Ankit Khare</title>
+<meta name="description" content="A MERGE condition that looked partition-scoped wasn&#x27;t. Runtime partition pruning only works when the batch is broadcast; literal predicates prune at planning time.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Why my Iceberg MERGE read 930 million rows to write 316 thousand">
+<meta property="og:description" content="A MERGE condition that looked partition-scoped wasn&#x27;t. Runtime partition pruning only works when the batch is broadcast; literal predicates prune at planning time.">
+<meta property="og:url" content="https://ankitkhare.dev/writing/iceberg-merge-pruning/">
+<meta property="og:image" content="https://ankitkhare.dev/og.png">
+<link rel="canonical" href="https://ankitkhare.dev/writing/iceberg-merge-pruning/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232457d6'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' dominant-baseline='middle' font-family='Arial' font-weight='700' font-size='30' fill='white'%3EAK%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fff;--soft:#f5f7fb;--fg:#0f1b33;--muted:#4f5d7a;--faint:#8692ab;--line:#e3e8f2;--accent:#2457d6;--code:#f1f4fa;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}}
+:root[data-theme="dark"]{--bg:#0b1220;--soft:#0f1729;--fg:#e8eefc;--muted:#a3b1cf;--faint:#6f7e9e;--line:#1e2a44;--accent:#6aa5ff;--code:#131d33}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+header{border-bottom:1px solid var(--line)}
+header .w{display:flex;justify-content:space-between;align-items:center;height:60px}
+header a{color:var(--fg);text-decoration:none;font-weight:700}
+header nav a{color:var(--muted);font-weight:400;margin-left:20px;font-size:15px}
+.w{max-width:720px;margin:0 auto;padding:0 24px}
+article{padding:56px 0 72px}
+.kicker{font:500 13px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:0 0 14px}
+.meta{color:var(--faint);font-size:14px;margin:0 0 36px}
+h2{font-size:23px;letter-spacing:-.01em;margin:44px 0 10px}
+p,li{color:var(--fg)}
+.lede{font-size:19px;color:var(--muted)}
+code{font:14px var(--mono);background:var(--code);padding:2px 6px;border-radius:5px}
+.tbl{overflow-x:auto;margin:18px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+blockquote{margin:22px 0;padding:4px 18px;border-left:3px solid var(--accent);color:var(--muted)}
+.end{margin-top:48px;padding-top:24px;border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+@media (max-width:620px){.w{padding:0 16px} body{font-size:16px} header nav a.hide-sm{display:none}}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;margin:18px 0}
+pre code{background:none;padding:0;font-size:13.5px;line-height:1.55}
+ol li{margin-bottom:4px}
+</style>
+</head>
+<body>
+<header><div class="w"><a href="/">Ankit Khare</a><nav><a href="/#work">Work</a><a class="hide-sm" href="/#labs">Labs</a><a href="/Ankit_Khare_Resume.pdf">Resume</a></nav></div></header>
+<main class="w">
+<article>
+<p class="kicker">Notes · Spark and Iceberg</p>
+<h1>Why my Iceberg MERGE read 930 million rows to write 316 thousand</h1>
+<p class="meta">Ankit Khare · November 2026 · 3 min read</p>
+
+<p class="lede">An hourly Iceberg load was taking 14 to 20 minutes to commit one file of about 316,000 rows. The MERGE looked like it only touched one day's partition. It was joining against the whole 930-million-row table.</p>
+
+<h2>The condition that looked fine</h2>
+<p>The target table is partitioned by year, month and day, and the batch carries the same columns. The merge condition matched them:</p>
+<pre><code>MERGE INTO lake.tags t
+USING batch s
+ON  t.resource_id = s.resource_id AND t.tag_key = s.tag_key
+AND t.year = s.year AND t.month = s.month AND t.day = s.day
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *</code></pre>
+<p>Reading that, you would expect Spark to touch only the partitions in the batch. It doesn't have to. <code>t.year = s.year</code> is a join condition, not a filter. Spark can turn it into partition pruning only at runtime, using dynamic partition pruning, and only when the source side is small enough to broadcast. Most of our merges had small batches and were broadcast, so they pruned fine. The tags batch was not, so every hourly load planned a scan of the entire table.</p>
+
+<h2>The fix: give the planner literals</h2>
+<p>Every row in a batch comes from a known set of dates, because the batch is built from the list of dates being processed. So the job can put those dates on the target side as literals, in front of the existing condition:</p>
+<pre><code>def merge_condition(keys, dates):
+    years  = sorted({d.year for d in dates})
+    months = sorted({d.month for d in dates})
+    days   = sorted({d.day for d in dates})
+    prune = (f"t.year IN ({','.join(map(str, years))}) "
+             f"AND t.month IN ({','.join(map(str, months))}) "
+             f"AND t.day IN ({','.join(map(str, days))})")
+    return prune + " AND " + " AND ".join(f"t.{k} = s.{k}" for k in keys)</code></pre>
+<p>Literals on the target are ordinary filters, so Spark pushes them into the Iceberg scan at planning time. The plan for the tags merge now shows <code>filters=year = 2026, month = 10, day = 30</code>.</p>
+<p>The separate IN lists can over-include near a month boundary: dates of October 31 and November 1 give <code>month IN (10, 11) AND day IN (1, 31)</code>, which also matches October 1. That is fine. The equality conditions still decide what matches, so a few extra partitions get read and nothing changes in the result. If no dates are passed, the condition is left exactly as it was.</p>
+
+<h2>Checking it</h2>
+<p>A change to a MERGE condition is the kind of thing you want to be boringly sure about. I ran the real merge code, schemas, conditions and update maps on a local Iceberg catalog, old condition against new:</p>
+<ul>
+<li>all 16 datasets that use the merge: identical results, and only the new condition prunes at planning time;</li>
+<li>the catch-up cases: missed hours earlier in the day, late rows from the previous day, month and year boundaries, and a month-long backfill;</li>
+<li>a 43-million-row table with a batch too big to broadcast: <strong>19.3 s to 2.1 s</strong>.</li>
+</ul>
+<p>The other jobs' tables top out around 59 million rows with batches that do broadcast, so runtime pruning already worked for them.</p>
+
+<h2>Takeaways</h2>
+<ul>
+<li><strong>Read the scan node, not the SQL.</strong> The physical plan or the Spark UI shows which filters reached the Iceberg scan. If your partition columns are not there, you are not pruning at planning time.</li>
+<li><strong>Runtime pruning is conditional.</strong> It depends on broadcast, which depends on batch size, which changes over time. A job that pruned fine last month can stop when one source grows.</li>
+<li><strong>Literals are a guarantee, but only if they are true.</strong> This works because every batch row provably comes from the listed dates. If you cannot prove that, a literal filter will silently skip rows you meant to update.</li>
+</ul>
+
+<p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
+</article>
+</main>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "efa192f960c1415eb85b5a919f7d6ba8"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>
