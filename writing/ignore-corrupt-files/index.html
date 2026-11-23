@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ignoreCorruptFiles turned a network blip into a missing day · Ankit Khare</title>
-<meta name="description" content="A Spark read option meant for damaged files was silently skipping files on transient S3 errors and schema drift, and a MERGE-based load made the gap invisible.">
+<title>How ignoreCorruptFiles hid missing days in our lakehouse · Ankit Khare</title>
+<meta name="description" content="A Spark read option meant for damaged files was skipping files on transient S3 errors and a type change, and a MERGE-based load made the gaps invisible.">
 <meta property="og:type" content="article">
-<meta property="og:title" content="ignoreCorruptFiles turned a network blip into a missing day">
-<meta property="og:description" content="A Spark read option meant for damaged files was silently skipping files on transient S3 errors and schema drift, and a MERGE-based load made the gap invisible.">
+<meta property="og:title" content="How ignoreCorruptFiles hid missing days in our lakehouse">
+<meta property="og:description" content="A Spark read option meant for damaged files was skipping files on transient S3 errors and a type change, and a MERGE-based load made the gaps invisible.">
 <meta property="og:url" content="https://ankitkhare.dev/writing/ignore-corrupt-files/">
 <meta property="og:image" content="https://ankitkhare.dev/og.png">
 <link rel="canonical" href="https://ankitkhare.dev/writing/ignore-corrupt-files/">
@@ -52,40 +52,32 @@ ol li{margin-bottom:4px}
 <main class="w">
 <article>
 <p class="kicker">Notes · Data quality</p>
-<h1>ignoreCorruptFiles turned a network blip into a missing day</h1>
+<h1>How ignoreCorruptFiles hid missing days in our lakehouse</h1>
 <p class="meta">Ankit Khare · November 2026 · 3 min read</p>
 
-<p class="lede">Backfills of our data-center inventory kept coming back with holes: a day of VMs here, three days of interconnects there. Every run reported success. Rerunning a single day loaded it in full. That combination is the signature of a silent skip.</p>
+<p class="lede">Our data-center inventory backfills kept coming back with gaps. VMs were missing two days and interconnects three. Every run had succeeded, and rerunning a single missing day loaded it in full.</p>
+<p>When a backfill drops data and a one-day rerun doesn't, something in the read path is skipping files quietly. Here it was a default in our shared Parquet read helper, which set Spark's <code>ignoreCorruptFiles</code> to true.</p>
 
-<h2>Where the rows went</h2>
-<p>Our shared Parquet read helper set Spark's <code>ignoreCorruptFiles</code> option to true by default. The option exists so one damaged file does not fail a large read. What it actually does is broader: any exception while reading a file, including a transient S3 error, makes Spark skip that file and carry on.</p>
-<p>A range backfill reads many files at once, so it is the most likely to hit a transient error. The file for that day was skipped, the day had no source rows, and the load did exactly what an Iceberg <code>MERGE</code> does with no rows: nothing. The table kept its old contents for that day, the job went green, and nobody knew.</p>
+<h2>What the option actually does</h2>
+<p>It's meant for the occasional damaged file in a big read. In practice Spark skips a file on any exception while reading it, and that includes a transient S3 error. Range backfills read many files at once, so they were the runs most likely to hit one.</p>
+<p>The rest followed from how the load works. The skipped day had no source rows. An Iceberg MERGE with no rows changes nothing, so the table kept whatever it already had for that day, and the job finished green.</p>
 
-<h2>The second cause, found on the way</h2>
-<p>One export changed format: a wider, 438-column version of the file wrote an integer column as <code>INT64</code>, where the job declares a 32-bit <code>IntegerType</code>. On the cluster Spark could not convert it, treated the file as unreadable, and skipped it. That day loaded <strong>0 of 273,590 rows</strong>, again with a green run.</p>
+<h2>A second cause</h2>
+<p>While I was in there I found another one. A newer, 438-column version of one export wrote an integer column as <code>INT64</code>, and the job declares that column as a 32-bit <code>IntegerType</code>. On the cluster, Spark couldn't convert it, treated the file as unreadable and skipped it. That day loaded 0 of 273,590 rows.</p>
 
-<h2>The fix</h2>
-<ul>
-<li><strong>Turn the option off for this source.</strong> With <code>ignoreCorruptFiles</code> false, Spark retries the task, and a failure that persists fails the run with the file path in the error.</li>
-<li><strong>Read each file with its own integer widths.</strong> The job takes the column types from each file's Parquet footer, reads with those, and then casts to the declared schema. Any other type mismatch still fails the read, on purpose.</li>
-<li><strong>Count rows per day.</strong> The job logs the number of source rows for every requested day and warns on a day whose file has none. It costs almost nothing and would have caught both problems on the first run.</li>
-<li><strong>A test that fails on the old setting.</strong> It writes an unreadable file into a test folder and checks that the read fails instead of returning fewer rows.</li>
-</ul>
+<h2>What changed</h2>
+<p>For this source the option is off now. Spark already retries failed tasks, so a transient error gets another try, and one that keeps failing stops the run with the file path in the error. For the type change, the job reads each file with the integer widths from that file's own Parquet footer and casts to the declared schema afterwards. Any other type mismatch still fails the read, which is what I want.</p>
+<p>I also added a row count for every requested day to the logs, with a warning when a day comes back empty. It's a few lines of code and would have caught both problems on the first bad run:</p>
 <pre><code>df = (spark.read
-      .option("ignoreCorruptFiles", "false")   # fail loudly; Spark retries transient errors
+      .option("ignoreCorruptFiles", "false")
       .parquet(*paths_for(dates)))
 
 per_day = df.groupBy("year", "month", "day").count().collect()
 for d in dates:
     if rows_for(per_day, d) == 0:
         log.warning("no source rows for %s", d)</code></pre>
-
-<h2>Takeaways</h2>
-<ul>
-<li><strong>Any flag that turns errors into skips is a data-loss switch.</strong> <code>ignoreCorruptFiles</code>, <code>ignoreMissingFiles</code>, permissive parse modes. Know which of your reads have them on, and why.</li>
-<li><strong>Upserts hide missing input.</strong> With a MERGE, no rows means no change, which looks the same as "nothing new happened." Append-only loads at least show a gap.</li>
-<li><strong>Green is not the same as complete.</strong> A cheap per-partition row count in the logs is the difference between finding this in a day and finding it when someone asks why a chart has a dip.</li>
-</ul>
+<p>A test writes an unreadable file into the source folder and checks that the read fails instead of returning fewer rows. It fails against the old setting.</p>
+<p>The part I keep coming back to is the upsert. With an append-only load, a missing day at least leaves a visible hole. With a MERGE, no input looks exactly like no change, so a skipped file can sit unnoticed until someone asks why a chart dips. Any option that turns read errors into skips, whether it's <code>ignoreCorruptFiles</code>, <code>ignoreMissingFiles</code> or a permissive parse mode, now needs a written reason in our code before it goes in.</p>
 
 <p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
 </article>

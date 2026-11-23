@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs · Ankit Khare</title>
-<meta name="description" content="How folding one-Spark-job-per-table into a few config-driven jobs, and running ETL on the ingestion&#x27;s schedule, took a lakehouse refresh from 2-3 hours to minutes.">
+<title>Consolidating 185 Airflow DAG files into 97 · Ankit Khare</title>
+<meta name="description" content="How folding one-Spark-job-per-table into a few config-driven jobs, and running ETL when the data lands, took our lakehouse refresh from 2-3 hours to minutes.">
 <meta property="og:type" content="article">
-<meta property="og:title" content="185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs">
-<meta property="og:description" content="How folding one-Spark-job-per-table into a few config-driven jobs, and running ETL on the ingestion&#x27;s schedule, took a lakehouse refresh from 2-3 hours to minutes.">
+<meta property="og:title" content="Consolidating 185 Airflow DAG files into 97">
+<meta property="og:description" content="How folding one-Spark-job-per-table into a few config-driven jobs, and running ETL when the data lands, took our lakehouse refresh from 2-3 hours to minutes.">
 <meta property="og:url" content="https://ankitkhare.dev/writing/consolidating-spark-jobs/">
 <meta property="og:image" content="https://ankitkhare.dev/og.png">
 <link rel="canonical" href="https://ankitkhare.dev/writing/consolidating-spark-jobs/">
@@ -52,18 +52,18 @@ ol li{margin-bottom:4px}
 <main class="w">
 <article>
 <p class="kicker">Notes · Data engineering</p>
-<h1>185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs</h1>
+<h1>Consolidating 185 Airflow DAG files into 97</h1>
 <p class="meta">Ankit Khare · November 2026 · 4 min read</p>
 
-<p class="lede">Nobody asked for this one. Our lakehouse refresh took two to three hours, and every new table meant copying another Spark job and another Airflow DAG. Over five weeks I folded those per-table jobs into a few config-driven ones. A full refresh now takes minutes, and runs every hour.</p>
+<p class="lede">Our lakehouse refresh used to take two to three hours. Most of that time went into starting Spark applications, and there were a lot of them. Over about five weeks this fall I folded the per-table jobs into a handful of config-driven ones, and the same refresh now finishes in minutes.</p>
 
 <h2>How it got that way</h2>
-<p>The lakehouse at work loads infrastructure inventory into Apache Iceberg: EC2, VPC and IAM data from our cloud's admin APIs, plus monitoring, configuration management and data-center sources. It grew one table at a time, and the easy way to add a table was to copy the last one. So each output table had its own Spark application and its own DAG. VPC alone had 25 separate flatten applications. EC2 had 14.</p>
-<p>Each of those applications started its own driver and executors, listed the same S3 prefixes, read the same source Parquet, and wrote one table. Most of the runtime was that overhead, repeated a few hundred times. The jobs also ran on fixed schedules that had nothing to do with when new data landed, so plenty of runs reprocessed data that had not changed.</p>
-<p>The maintenance cost was just as bad. A fix to how we parse timestamps meant the same edit in 25 files, and reviewing it meant reading all 25.</p>
+<p>The lakehouse loads infrastructure inventory into Apache Iceberg: EC2, VPC and IAM data from our cloud's admin APIs, plus some monitoring and data-center sources. It grew one table at a time. Whenever someone needed a new table, the quickest path was to copy an existing Spark job and its DAG and change the parts that differed, so that's what we did. By September the VPC data alone was spread over 25 separate Spark applications, and EC2 over 14.</p>
+<p>Each application started its own driver and executors, listed the same S3 prefixes and read the same Parquet before writing its one table. Multiply that by a few hundred runs and you have most of the refresh time. The schedules didn't help. Jobs ran hourly or daily because the DAG they were copied from did, whether or not new data had arrived.</p>
+<p>Nobody had filed a ticket about any of this. It was just how the pipelines were, and I was tired of making the same timestamp fix in 25 files.</p>
 
-<h2>The design</h2>
-<p>One application per source, with a registry of datasets. A dataset is just its source folder, a transform onto its output schema, and its merge keys:</p>
+<h2>One application per source</h2>
+<p>The replacement is one Spark application per source, with a registry of datasets inside it. A dataset is little more than a source folder, a SQL transform onto the output schema, and the merge keys. Roughly:</p>
 <pre><code>DATASETS = {
     "subnets": Dataset(source="DescribeSubnets", schema=SUBNETS,
                        merge_keys=["subnet_id", "region"], sql=SUBNETS_SQL),
@@ -73,12 +73,12 @@ ol li{margin-bottom:4px}
 
 def run(spark, datasets, max_parallel=4):
     def one(ds):
-        s = spark.newSession()          # its own temp views and conf
-        dates = dates_behind(s, ds)     # per table: a current table is skipped
+        s = spark.newSession()          # separate temp views and conf
+        dates = dates_behind(s, ds)     # a table that is current gets skipped
         if not dates:
             return
         df = transform(s, ds, read_source(s, ds.source, dates))
-        assert_schema(df, ds.schema)    # before anything is written
+        assert_schema(df, ds.schema)    # checked before anything is written
         merge(s, df, ds.merge_keys, dates)
 
     with ThreadPoolExecutor(max_parallel) as pool:
@@ -86,39 +86,27 @@ def run(spark, datasets, max_parallel=4):
     failed = [n for n, f in results.items() if f.exception()]
     if failed:
         raise RuntimeError(f"datasets failed: {failed}")</code></pre>
-<p>A few decisions did most of the work:</p>
-<ul>
-<li><strong>Dates are worked out per table.</strong> A table that is current is skipped, and one that is behind catches up in the same run. The job only lists and reads the source folders that some table actually needs.</li>
-<li><strong>Datasets run in parallel, each in its own Spark session.</strong> <code>spark.newSession()</code> gives each dataset its own temp views and conf, which is what makes concurrent Iceberg MERGEs from one application safe. <code>spark.scheduler.mode=FAIR</code> lets the concurrent stages share executors.</li>
-<li><strong>Schemas are checked before any write.</strong> The output schemas are imported unchanged from the old jobs and asserted during query analysis. Same tables, same partitioning, same merge keys, so nothing downstream had to change.</li>
-<li><strong>No driver actions on the hot path.</strong> No <code>count()</code>, <code>collect()</code> or <code>isEmpty()</code> before the write. The only pre-run work is listing S3 prefixes and analysing the queries.</li>
-<li><strong>One bad dataset does not stop the rest.</strong> Failures are collected, the others finish, and the job fails at the end with a summary.</li>
-</ul>
+<p>Most of the speedup comes from doing the start-up and the reads once. A few other choices mattered too.</p>
+<p>Each table works out its own dates. If a table is already current the job skips it, and if it's a few days behind it catches up in the same run. The job then lists and reads only the source folders that at least one table needs.</p>
+<p>Datasets run in parallel from a thread pool, and each one gets its own <code>spark.newSession()</code>. That keeps temp views and per-dataset settings apart, which is what lets several Iceberg MERGEs run from one application without stepping on each other. With <code>spark.scheduler.mode=FAIR</code> they share executors instead of queuing behind the biggest dataset.</p>
+<p>The output schemas are imported unchanged from the old jobs and asserted during query analysis, before anything is written. Table names, partitioning and merge keys stayed the same, so nothing downstream had to know the jobs had changed. There are also no <code>count()</code>, <code>collect()</code> or <code>isEmpty()</code> calls before the write; the only work before it is listing S3 prefixes and analysing the queries.</p>
+<p>If one dataset fails, the others still finish, and the job fails at the end with a list of what broke. With 25 tables in one job, I didn't want one bad transform to take the other 24 down with it.</p>
 
-<h2>Run when the data lands</h2>
-<p>The second half of the change was cadence. Ingestion writes new files on a known schedule, so each DAG now runs just after its source lands, instead of hourly or daily out of habit. Each run covers whatever range of dates is behind, rather than Airflow scheduling one run per missed interval. After a pause there is one catch-up run, not a queue of them.</p>
-<p>With the jobs cheap enough, I added hour-level partitions for the EC2, VPC and IAM tables and moved them to hourly runs, with Iceberg maintenance (expiring snapshots, compacting small files) in its own daily job instead of inline.</p>
+<h2>Running when the data lands</h2>
+<p>The other half of the change was timing. Ingestion writes new files on a known schedule, so each DAG now runs a few minutes after its source lands. A run also covers whatever range of dates is outstanding. Before, if Airflow had been paused, it queued one run per missed interval; now a single run catches up.</p>
+<p>Once the jobs were cheap, hourly runs became realistic. I added hour partitions to the EC2, VPC and IAM tables, moved them to hourly runs, and pulled Iceberg maintenance (snapshot expiry and compaction) into its own daily job.</p>
 
-<h2>Rolling it out</h2>
-<p>Four pull requests between September 10 and October 16: EC2 and VPC first, then hourly partitions and IAM, then the monitoring sources together with the cadence change, then configuration-management inventory, which also let me delete a set of aggregation DAGs. Doing it source by source meant each cut-over was small enough to check table by table.</p>
-
-<h2>Results</h2>
+<h2>Rollout</h2>
+<p>I did it one source at a time, in four pull requests between September 10 and October 16. EC2 and VPC went first, then hourly partitions and IAM, then the monitoring sources together with the schedule change, and last the configuration-management inventory, which also let me delete a set of aggregation DAGs. Going source by source kept each cut-over small enough to check table by table.</p>
 <div class="tbl"><table>
 <tr><th></th><th>Before</th><th>After</th></tr>
 <tr><td>Airflow DAG files</td><td>185</td><td>97</td></tr>
 <tr><td>Spark job modules</td><td>364</td><td>266</td></tr>
 <tr><td>Lines of code</td><td colspan="2">about 41K fewer (68K deleted, 27K added)</td></tr>
 <tr><td>Full refresh</td><td>2-3 hours</td><td>minutes</td></tr>
-<tr><td>Freshness</td><td>a few runs a day</td><td>hourly</td></tr>
+<tr><td>Schedule</td><td>a few runs a day</td><td>hourly</td></tr>
 </table></div>
-
-<h2>What I'd tell someone about to do the same</h2>
-<ul>
-<li><strong>Look at overhead before you add executors.</strong> Our jobs were not slow because the work was big. They were slow because the same start-up, listing and reading happened hundreds of times.</li>
-<li><strong>A shared job has a shared blast radius.</strong> A bug in one transform can now break 25 tables, so the schema check and per-dataset isolation are not optional extras.</li>
-<li><strong>Keep the outputs identical.</strong> Holding schemas, partitions and merge keys fixed turned a scary refactor into a mechanical one.</li>
-<li><strong>Log what the source does not have.</strong> A few fields the old jobs populated were not in the flattened source at all. They are listed in the code and logged every run, instead of quietly turning into nulls.</li>
-</ul>
+<p>If I did it again, I'd put data-quality checks into the shared job earlier. With 25 tables behind one runner, a single bug reaches all of them, and a schema assertion only catches part of that. I'd also write down missing source fields from the start. A few fields the old jobs filled in aren't in the flattened source at all. They're listed in the code now and logged on every run, so a null in those columns is expected rather than a mystery.</p>
 
 <p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
 </article>

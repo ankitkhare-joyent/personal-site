@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>A Spark 3.5 optimizer crash that a cache was hiding · Ankit Khare</title>
-<meta name="description" content="An AssertionError in Spark 3.5.1&#x27;s predicate pushdown, triggered by nullif() join keys, hidden by persist(), and missed by unit tests that never touched Iceberg.">
+<meta name="description" content="An AssertionError in Spark 3.5.1&#x27;s predicate pushdown, caused by nullif() join keys, hidden by persist(), and missed by unit tests that never touched Iceberg.">
 <meta property="og:type" content="article">
 <meta property="og:title" content="A Spark 3.5 optimizer crash that a cache was hiding">
-<meta property="og:description" content="An AssertionError in Spark 3.5.1&#x27;s predicate pushdown, triggered by nullif() join keys, hidden by persist(), and missed by unit tests that never touched Iceberg.">
+<meta property="og:description" content="An AssertionError in Spark 3.5.1&#x27;s predicate pushdown, caused by nullif() join keys, hidden by persist(), and missed by unit tests that never touched Iceberg.">
 <meta property="og:url" content="https://ankitkhare.dev/writing/spark-pushdown-assertion/">
 <meta property="og:image" content="https://ankitkhare.dev/og.png">
 <link rel="canonical" href="https://ankitkhare.dev/writing/spark-pushdown-assertion/">
@@ -55,44 +55,29 @@ ol li{margin-bottom:4px}
 <h1>A Spark 3.5 optimizer crash that a cache was hiding</h1>
 <p class="meta">Ankit Khare · November 2026 · 3 min read</p>
 
-<p class="lede">A production table started failing on every retry with an error that looked like it belonged to someone else: an internal assertion inside Spark's optimizer. The cause was a perfectly reasonable join key, and a cache had been hiding it.</p>
-
-<h2>The error</h2>
+<p class="lede">In early November a production job started failing on every retry with an internal Spark error. None of our code was in the stack trace. The cause was an ordinary join key, and a <code>persist()</code> that had been hiding the problem.</p>
 <pre><code>[INTERNAL_ERROR] The Spark SQL phase optimization failed with an internal error.
 java.lang.AssertionError ... at PushablePredicate ... V2ScanRelationPushDown</code></pre>
-<p>It came from a job that builds a dimension table out of several reference views over Iceberg. Retries did not help, and nothing in our code was in the stack trace.</p>
+<p>The job builds a dimension table by joining several reference views over Iceberg. Those views were keyed on <code>nullif(trim(id), '')</code>, so blank IDs became NULL and wouldn't match anything. It's a common idiom and it does what it says.</p>
 
-<h2>What was actually happening</h2>
-<p>The reference views were keyed on <code>nullif(trim(id), '')</code>, so blank IDs became NULL and joined to nothing. That is a common idiom and it was correct. The trouble was what Spark did with it:</p>
-<ol>
-<li>For an inner join, Spark infers <code>key IS NOT NULL</code> on both sides.</li>
-<li>It pushes that predicate down, through a <code>max_by</code> aggregate, toward the Iceberg scan.</li>
-<li>Spark 3.5.1 simplifies <code>IsNotNull(nullif(...))</code> into a top-level <code>If</code> expression.</li>
-<li>The translation from Catalyst filters to data source V2 filters asserts that every predicate it is handed can be translated. That <code>If</code> cannot, so the optimizer crashes.</li>
-</ol>
-<p>Why only now? An upstream <code>persist()</code> meant later plans reused the cached result instead of planning the pushdown again. When an unrelated change made the plans stop matching the cached ones, every run planned the pushdown, and every run failed.</p>
+<h2>What Spark did with it</h2>
+<p>For an inner join, Spark infers <code>key IS NOT NULL</code> on both sides and tries to push that predicate down toward the scan. Here it went through a <code>max_by</code> aggregate and reached the Iceberg source. On the way, Spark 3.5.1 simplified <code>IsNotNull(nullif(...))</code> into a top-level <code>If</code> expression. The code that turns Catalyst filters into data source V2 filters asserts that whatever it receives can be translated. An <code>If</code> can't, so the optimizer threw.</p>
+<p>This had been sitting there for a while. An upstream <code>persist()</code> meant later stages reused the cached result, so the pushdown never got planned. An unrelated change made the plans stop matching the cache, and from then on every run hit the assertion.</p>
 
 <h2>The fix</h2>
-<p>Key the views on <code>trim(id)</code> instead. Blank keys now group under <code>''</code> rather than NULL, and they still join to nothing, because every column they are compared with is itself <code>nullif</code>'d. I reproduced it with PySpark 3.5.1 and Iceberg 1.5.2 using the real views: the old code fails without the cache, and the new code passes with and without it, with the same output.</p>
+<p>I changed the keys to <code>trim(id)</code>. Blank keys now group under an empty string instead of NULL, and they still match nothing, because the columns they're compared with are <code>nullif</code>'d. I reproduced the failure with PySpark 3.5.1 and Iceberg 1.5.2 using the real views first. The old code failed once the cache was out of the way, the new code passed with and without it, and the output was the same.</p>
 
-<h2>It came back ten days later</h2>
-<p>A different job hit the same assertion from filters on Iceberg reads:</p>
-<pre><code>-- before: not translatable to a V2 filter
+<h2>Ten days later</h2>
+<p>A different job hit the same assertion, this time from filters in its own SQL:</p>
+<pre><code>-- before: can't be translated to a V2 filter
 NULLIF(TRIM(service_name), '') IS NOT NULL
 NOT COALESCE(is_deleted, false)
 
--- after: same meaning, plain pushable predicates
+-- after: same meaning
 service_name IS NOT NULL AND TRIM(service_name) &lt;&gt; ''
 NOT (is_deleted &lt;=&gt; true)</code></pre>
-<p>This time the more interesting fix was the test. All of that job's tests ran on in-memory DataFrames, where nothing is pushed down to a data source, so they could never see this class of bug. I added a test that runs the job's SQL against real local Iceberg tables. It fails on the old code with the same <code>AssertionError</code> and passes on the new code.</p>
-
-<h2>Takeaways</h2>
-<ul>
-<li><strong>Filters on a scan should be boring.</strong> Plain columns, comparisons, <code>IS NULL</code>, <code>IN</code>. Wrap the clever expressions around the result, not inside the predicate the optimizer will try to push down.</li>
-<li><strong>A cache can hide a planner bug.</strong> If something fails "suddenly" after an unrelated change, check whether a <code>persist()</code> used to short-circuit the plan.</li>
-<li><strong>Test against the real format.</strong> In-memory DataFrames skip pushdown, file pruning and the data source's own rules. One test on real Iceberg tables catches what a hundred in-memory ones cannot.</li>
-<li><strong>Reproduce before you guard.</strong> Wrapping the job in a retry or a try/except would have hidden this again. Pinning the exact versions and the real views turned an "internal error" into a one-line fix.</li>
-</ul>
+<p>Rewriting the filters took a few minutes. What bothered me more was that the job's tests had all passed. They ran on in-memory DataFrames, and nothing gets pushed down to an in-memory DataFrame, so those tests could never have caught it. I added one that runs the job's SQL against real Iceberg tables in a local catalog. It fails on the old code with the same <code>AssertionError</code> and passes on the new code.</p>
+<p>I write Spark SQL a little differently now. Filters that sit directly on a scan stay plain: columns, comparisons, <code>IS NULL</code>, <code>IN</code>, with anything fancier applied after the read. And when a job breaks right after an unrelated change, one of the first things I check is whether a cache used to short-circuit the plan.</p>
 
 <p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
 </article>

@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Why my Iceberg MERGE read 930 million rows to write 316 thousand · Ankit Khare</title>
-<meta name="description" content="A MERGE condition that looked partition-scoped wasn&#x27;t. Runtime partition pruning only works when the batch is broadcast; literal predicates prune at planning time.">
+<title>An Iceberg MERGE that read 930 million rows to write 316 thousand · Ankit Khare</title>
+<meta name="description" content="A MERGE condition on year, month and day looked partition-scoped. Spark only prunes on it at runtime, and only when the batch is broadcast. Literal filters fixed it.">
 <meta property="og:type" content="article">
-<meta property="og:title" content="Why my Iceberg MERGE read 930 million rows to write 316 thousand">
-<meta property="og:description" content="A MERGE condition that looked partition-scoped wasn&#x27;t. Runtime partition pruning only works when the batch is broadcast; literal predicates prune at planning time.">
+<meta property="og:title" content="An Iceberg MERGE that read 930 million rows to write 316 thousand">
+<meta property="og:description" content="A MERGE condition on year, month and day looked partition-scoped. Spark only prunes on it at runtime, and only when the batch is broadcast. Literal filters fixed it.">
 <meta property="og:url" content="https://ankitkhare.dev/writing/iceberg-merge-pruning/">
 <meta property="og:image" content="https://ankitkhare.dev/og.png">
 <link rel="canonical" href="https://ankitkhare.dev/writing/iceberg-merge-pruning/">
@@ -52,23 +52,23 @@ ol li{margin-bottom:4px}
 <main class="w">
 <article>
 <p class="kicker">Notes · Spark and Iceberg</p>
-<h1>Why my Iceberg MERGE read 930 million rows to write 316 thousand</h1>
+<h1>An Iceberg MERGE that read 930 million rows to write 316 thousand</h1>
 <p class="meta">Ankit Khare · November 2026 · 3 min read</p>
 
-<p class="lede">An hourly Iceberg load was taking 14 to 20 minutes to commit one file of about 316,000 rows. The MERGE looked like it only touched one day's partition. It was joining against the whole 930-million-row table.</p>
+<p class="lede">One of our hourly loads took 14 to 20 minutes to commit a single file of about 316,000 rows. The table it writes to has around 930 million rows, and it turned out the MERGE was reading all of them every hour.</p>
 
-<h2>The condition that looked fine</h2>
-<p>The target table is partitioned by year, month and day, and the batch carries the same columns. The merge condition matched them:</p>
+<h2>The merge</h2>
+<p>The target table is partitioned by year, month and day, and the merge condition matches on those columns:</p>
 <pre><code>MERGE INTO lake.tags t
 USING batch s
 ON  t.resource_id = s.resource_id AND t.tag_key = s.tag_key
 AND t.year = s.year AND t.month = s.month AND t.day = s.day
 WHEN MATCHED THEN UPDATE SET *
 WHEN NOT MATCHED THEN INSERT *</code></pre>
-<p>Reading that, you would expect Spark to touch only the partitions in the batch. It doesn't have to. <code>t.year = s.year</code> is a join condition, not a filter. Spark can turn it into partition pruning only at runtime, using dynamic partition pruning, and only when the source side is small enough to broadcast. Most of our merges had small batches and were broadcast, so they pruned fine. The tags batch was not, so every hourly load planned a scan of the entire table.</p>
+<p>I'd read that condition plenty of times and assumed it limited the merge to the batch's days. It doesn't, at least not reliably. <code>t.year = s.year</code> is a join condition. Spark can use it to prune target partitions only at runtime, through dynamic partition pruning, and only when the batch is small enough to broadcast. Most of our merges have small batches that get broadcast and prune fine. The tags batch was too big, so its plan scanned the whole table.</p>
 
-<h2>The fix: give the planner literals</h2>
-<p>Every row in a batch comes from a known set of dates, because the batch is built from the list of dates being processed. So the job can put those dates on the target side as literals, in front of the existing condition:</p>
+<h2>Putting the dates in the condition</h2>
+<p>Every row in a batch comes from the dates the job is processing, because the batch is built from that list. So the job can write those dates into the condition as literals on the target side:</p>
 <pre><code>def merge_condition(keys, dates):
     years  = sorted({d.year for d in dates})
     months = sorted({d.month for d in dates})
@@ -77,24 +77,13 @@ WHEN NOT MATCHED THEN INSERT *</code></pre>
              f"AND t.month IN ({','.join(map(str, months))}) "
              f"AND t.day IN ({','.join(map(str, days))})")
     return prune + " AND " + " AND ".join(f"t.{k} = s.{k}" for k in keys)</code></pre>
-<p>Literals on the target are ordinary filters, so Spark pushes them into the Iceberg scan at planning time. The plan for the tags merge now shows <code>filters=year = 2026, month = 10, day = 30</code>.</p>
-<p>The separate IN lists can over-include near a month boundary: dates of October 31 and November 1 give <code>month IN (10, 11) AND day IN (1, 31)</code>, which also matches October 1. That is fine. The equality conditions still decide what matches, so a few extra partitions get read and nothing changes in the result. If no dates are passed, the condition is left exactly as it was.</p>
+<p>Spark treats literals on the target like any other filter and pushes them into the Iceberg scan while planning. The tags merge plan now shows <code>filters=year = 2026, month = 10, day = 30</code>.</p>
+<p>Separate IN lists do over-include near a month boundary. October 31 and November 1 become <code>month IN (10, 11) AND day IN (1, 31)</code>, which also matches October 1. I left it that way. The equality conditions still decide which rows match, so the only cost is reading an extra partition or two now and then. When no dates are passed, the condition is unchanged.</p>
 
-<h2>Checking it</h2>
-<p>A change to a MERGE condition is the kind of thing you want to be boringly sure about. I ran the real merge code, schemas, conditions and update maps on a local Iceberg catalog, old condition against new:</p>
-<ul>
-<li>all 16 datasets that use the merge: identical results, and only the new condition prunes at planning time;</li>
-<li>the catch-up cases: missed hours earlier in the day, late rows from the previous day, month and year boundaries, and a month-long backfill;</li>
-<li>a 43-million-row table with a batch too big to broadcast: <strong>19.3 s to 2.1 s</strong>.</li>
-</ul>
-<p>The other jobs' tables top out around 59 million rows with batches that do broadcast, so runtime pruning already worked for them.</p>
-
-<h2>Takeaways</h2>
-<ul>
-<li><strong>Read the scan node, not the SQL.</strong> The physical plan or the Spark UI shows which filters reached the Iceberg scan. If your partition columns are not there, you are not pruning at planning time.</li>
-<li><strong>Runtime pruning is conditional.</strong> It depends on broadcast, which depends on batch size, which changes over time. A job that pruned fine last month can stop when one source grows.</li>
-<li><strong>Literals are a guarantee, but only if they are true.</strong> This works because every batch row provably comes from the listed dates. If you cannot prove that, a literal filter will silently skip rows you meant to update.</li>
-</ul>
+<h2>Checking it changed nothing else</h2>
+<p>Changing a merge condition on tables people query every day made me nervous, so I ran the old and new conditions side by side on a local Iceberg catalog with the real merge code, schemas and update maps. Across all 16 datasets that go through this merge the results were identical, and only the new condition pruned during planning. I also ran the catch-up cases that tend to break date logic: hours missed earlier in the day, late rows from the day before, month and year boundaries, and a month-long backfill. On a 43-million-row table with a batch too big to broadcast, the merge went from 19.3 seconds to 2.1.</p>
+<p>The other merge jobs write to tables of 59 million rows or fewer, with batches that do get broadcast, so I left those alone.</p>
+<p>Since then, whenever a merge or a join is slow, the first thing I look at is the scan node in the physical plan. If the partition columns aren't among the pushed filters, pruning is happening at runtime or not at all, and runtime pruning depends on the batch staying small enough to broadcast. That can change on its own as a source grows. Literal filters don't have that problem, but they're only safe when you can show every batch row belongs to those partitions. If you can't, they'll quietly skip rows you meant to update.</p>
 
 <p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
 </article>

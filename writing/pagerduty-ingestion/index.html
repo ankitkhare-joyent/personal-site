@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ingesting 10,000 PagerDuty incidents without fighting Spark · Ankit Khare</title>
-<meta name="description" content="Bulk endpoints with a built-in self-check, one shared rate limiter, and getting Spark out of the way: from a 1.5-2 hour API crawl to about 18 minutes.">
+<title>Ingesting our PagerDuty history in 18 minutes instead of two hours · Ankit Khare</title>
+<meta name="description" content="Moving to PagerDuty&#x27;s bulk log entries endpoint with a self-check on every run, one shared rate limiter, and writing files without Spark after hitting its 128 MB message limit.">
 <meta property="og:type" content="article">
-<meta property="og:title" content="Ingesting 10,000 PagerDuty incidents without fighting Spark">
-<meta property="og:description" content="Bulk endpoints with a built-in self-check, one shared rate limiter, and getting Spark out of the way: from a 1.5-2 hour API crawl to about 18 minutes.">
+<meta property="og:title" content="Ingesting our PagerDuty history in 18 minutes instead of two hours">
+<meta property="og:description" content="Moving to PagerDuty&#x27;s bulk log entries endpoint with a self-check on every run, one shared rate limiter, and writing files without Spark after hitting its 128 MB message limit.">
 <meta property="og:url" content="https://ankitkhare.dev/writing/pagerduty-ingestion/">
 <meta property="og:image" content="https://ankitkhare.dev/og.png">
 <link rel="canonical" href="https://ankitkhare.dev/writing/pagerduty-ingestion/">
@@ -52,38 +52,29 @@ ol li{margin-bottom:4px}
 <main class="w">
 <article>
 <p class="kicker">Notes · Data engineering</p>
-<h1>Ingesting 10,000 PagerDuty incidents without fighting Spark</h1>
+<h1>Ingesting our PagerDuty history in 18 minutes instead of two hours</h1>
 <p class="meta">Ankit Khare · November 2026 · 3 min read</p>
 
-<p class="lede">We wanted our full PagerDuty history in the lakehouse: incidents, their log entries and their alerts. The first version took one and a half to two hours a run. The faster version then broke on a Spark limit I had never needed to know about.</p>
+<p class="lede">We wanted our PagerDuty history in the lakehouse: incidents, their log entries and their alerts. The first version took an hour and a half to two hours a run. The faster version then ran into a Spark limit I hadn't needed to know about before.</p>
 
-<h2>Version one: one request series per incident</h2>
-<p>Each run refetched about 10,000 incidents, then walked each incident's log entries and alerts. That is tens of thousands of paginated requests, and with five worker threads it took 1.5 to 2 hours.</p>
+<h2>The slow version</h2>
+<p>Every run refetched about 10,000 incidents and then, for each one, paged through its log entries and alerts. With five worker threads that took 1.5 to 2 hours.</p>
 
-<h2>Use the bulk endpoint, and check it every run</h2>
-<p>PagerDuty has an account-wide log entries endpoint, so the job now fetches log entries for the whole time window in six-hour slices and groups them by incident. A slice that hits the API's 10,000-result offset cap is split in half and fetched again. Entries are de-duplicated and kept in the API's order, newest first, because tables built later depend on that order.</p>
-<p>Switching from a per-incident source to a bulk one is the kind of change that can drift without anyone noticing, so the job checks itself. Every run picks a sample of incidents (the busiest half plus an even spread, 20 by default) and fetches them the old way. If the entry IDs or their order differ for any of them, it logs a warning and falls back to the per-incident path for every incident. A config flag forces the old path too.</p>
+<h2>Bulk log entries, checked every run</h2>
+<p>PagerDuty also has an account-wide log entries endpoint, so the job now pulls log entries for the whole window in six-hour slices and groups them by incident afterwards. If a slice hits the API's 10,000-result offset cap, it's split in half and fetched again. Entries are de-duplicated and kept newest first, the order the per-incident endpoint uses, because tables built later depend on it.</p>
+<p>I didn't want to switch sources and just hope they agreed, so each run checks. It takes a sample of incidents (the busiest half plus an even spread across the rest, 20 by default) and fetches those the old way as well. If the entry IDs or their order differ for any of them, the run logs a warning and falls back to the per-incident path for everything. A config setting can also force the old path.</p>
 
-<h2>One rate limiter, set by measurement</h2>
-<p>Alerts have no account-wide endpoint, so they are still fetched per incident, alongside the bulk log entries. Ten driver threads share a single rate limiter. PagerDuty allows roughly 960 requests a minute per key, and I started at 840. Another scheduled job used the same key, and at 840 we drew 429 responses with about 25-second <code>Retry-After</code> waits every minute. At 600 a minute the run was just as fast, with none.</p>
+<h2>Rate limits</h2>
+<p>Alerts have no account-wide endpoint, so they're still fetched per incident, alongside the log entries. Ten driver threads share one rate limiter. PagerDuty allows roughly 960 requests a minute per key, and I started at 840. That was too high, because another scheduled job uses the same key: at 840 we got 429s with about 25-second Retry-After waits every minute. At 600 a minute the run took just as long and the 429s stopped.</p>
 
-<h2>The 128 MB surprise</h2>
-<p>The first full run on staging fetched everything (10,258 incidents, 113,000 log entries and 10,000 alerts in about 18 minutes) and then failed. Our shared write helper sent each dataset's JSON through a single Spark task, and the incidents dataset came to 237 MB, over Spark's 128 MB <code>spark.rpc.message.maxSize</code>. The Spark operator restarted the job, which started the 18 minutes again.</p>
-<p>The fix was to stop using Spark for that step. Ingestion now writes each dataset straight to S3 with PyArrow from the driver, in the same layout and file formats as before, and frees each dataset once it is written. A failed write raises instead of being logged and ignored. The flatten job that reads the files only picks up <code>*.parquet</code>, since the folder also holds the JSON copies.</p>
+<h2>The 128 MB limit</h2>
+<p>The first full run on staging fetched everything (10,258 incidents, 113,000 log entries and 10,000 alerts in about 18 minutes) and then failed while writing. Our shared write helper sent each dataset's JSON through a single Spark task, and the incidents came to 237 MB, while <code>spark.rpc.message.maxSize</code> is 128 MB. The Spark operator restarted the job, which meant fetching everything again.</p>
+<p>The fix was to take Spark out of that step. Ingestion now writes each dataset straight to S3 with PyArrow from the driver, in the same layout and formats as before, and drops each dataset from memory once it's written. A failed write raises an error now; the old helper only logged it. The flatten job reads only the <code>.parquet</code> files in the run folder, since the JSON copies sit next to them.</p>
+<p>With the HTTP work on driver threads and Spark only writing 13 files, the job barely needed a cluster. The DAG went from a 2-core driver plus two to five 2-core executors with dynamic allocation, to one driver core and a single 1-core executor.</p>
 
-<h2>Right-size the job to what it does</h2>
-<p>The API work is network-bound threads on the driver, and the only Spark work left is writing 13 files. So the DAG went from a 2-core driver plus two to five 2-core executors with dynamic allocation to one driver core and a single 1-core executor.</p>
-
-<h2>Tests with a fake API</h2>
-<p>The tests run against a fake PagerDuty API and check that bulk and per-incident modes produce identical datasets (including the derived tables and same-second ties), that a mismatch triggers the fallback, that late entries are ignored, that the offset-cap split works, and that the limiter spaces requests correctly.</p>
-
-<h2>Takeaways</h2>
-<ul>
-<li><strong>Spark is a poor HTTP client.</strong> Use it where the data is big. When the work is many small requests, threads on one machine and a plain file writer are simpler and cheaper.</li>
-<li><strong>A faster source needs a built-in check.</strong> Comparing a sample against the slow path on every run lets you take the speed and still sleep.</li>
-<li><strong>Rate limits are shared.</strong> Measure 429s with everything else that uses the key running, not the documented limit.</li>
-<li><strong>Know your framework's size limits</strong> before your data finds them for you.</li>
-</ul>
+<h2>Tests</h2>
+<p>The tests run against a fake PagerDuty API. They check that bulk and per-incident modes produce identical datasets, derived tables and same-second ties included, and that a mismatch triggers the fallback. Late entries, the offset-cap split and the limiter's spacing each have their own test.</p>
+<p>Looking back, the first version's real mistake was treating a pile of HTTP requests as a Spark job. Spark earns its keep when the data is large. Here the data was small and the requests were many, and a few threads with a plain file writer turned out simpler and cheaper.</p>
 
 <p class="end">More notes at <a href="/#writing">ankitkhare.dev</a>. Questions or corrections: <a href="mailto:ankit@ankitkhare.dev">ankit@ankitkhare.dev</a>.</p>
 </article>

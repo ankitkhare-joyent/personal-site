@@ -7,7 +7,7 @@
 <meta name="description" content="Ankit Khare builds data and AI infrastructure on Kubernetes: managed Spark, Apache Iceberg lakehouses, and evaluated Text2SQL. Data platform technical lead in San Jose, CA.">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Ankit Khare · Data Platform Technical Lead">
-<meta property="og:description" content="Lakehouses, Spark platforms and LLM tools that hold up in production.">
+<meta property="og:description" content="I build data platforms on Kubernetes, and lately the LLM tools that run on top of them.">
 <meta property="og:url" content="https://ankitkhare.dev/">
 <meta property="og:image" content="https://ankitkhare.dev/og.png">
 <link rel="canonical" href="https://ankitkhare.dev/">
@@ -117,7 +117,7 @@ footer .links a{overflow-wrap:anywhere}
 <div class="hero"><div class="wrap">
   <p class="eyebrow">Data platform · AI infrastructure</p>
   <h1>Ankit Khare</h1>
-  <p class="tagline">Lakehouses, Spark platforms and LLM tools that hold up in production.</p>
+  <p class="tagline">I build data platforms on Kubernetes, and lately the LLM tools that run on top of them.</p>
   <p class="lede">I'm a data platform technical lead at Joyent (Samsung Cloud), leading two engineers. I helped build a managed Spark service from its first month, then the Iceberg lakehouse on top of it and a Text2SQL API that answers infrastructure questions in Slack, measured against its own eval set.</p>
   <div class="cta">
     <a class="btn primary" href="Ankit_Khare_Resume.pdf">Download resume</a>
@@ -133,7 +133,7 @@ footer .links a{overflow-wrap:anywhere}
   <p class="sub">Production systems I built and run at Joyent for Samsung Private Cloud.</p>
   <div class="grid g3">
     <div class="card">
-      <h3>Text2SQL with real evaluation</h3>
+      <h3>Text2SQL with an eval set</h3>
       <p>Plain-English questions become guarded Trino SQL over the lakehouse, answered in an API and a Slack bot. A sqlglot guard checks every query and OPA policies hide PII fields, failing closed.</p>
       <div class="stat">92.8%</div><div class="stat-l">accuracy on 83 gold questions (84% on a hold-out set)</div>
       <div class="tags"><span class="tag">Claude</span><span class="tag">OpenRouter</span><span class="tag">sqlglot</span><span class="tag">OPA</span></div>
@@ -155,7 +155,7 @@ footer .links a{overflow-wrap:anywhere}
 
 <section id="labs" class="alt"><div class="wrap">
   <h2>Open-source labs</h2>
-  <p class="sub">Hands-on projects I built to go deep on the tools I use at work and the ones coming next. Each runs locally with Docker and has its own write-up.</p>
+  <p class="sub">Side projects where I try out the tools I use at work, plus a few I expect to need next. Each one runs locally with Docker and has its own README.</p>
   <div class="grid g2">
     <a class="card" href="https://github.com/ankitkhare-joyent/semantic-txt-2-sql"><span class="repo">semantic-txt-2-sql</span><h3>Text-to-SQL agents, three ways</h3><p>Cube semantic layer, raw SQL and a hybrid over an Iceberg lakehouse, measured against each other.</p></a>
     <a class="card" href="https://github.com/ankitkhare-joyent/learn-ai-agent"><span class="repo">learn-ai-agent</span><h3>MCP servers and AI agents</h3><p>An EC2 inventory lakehouse behind a REST API and an MCP server, queried by Claude agents.</p></a>
@@ -172,12 +172,12 @@ footer .links a{overflow-wrap:anywhere}
   <h2>Writing</h2>
   <p class="sub">Notes from building data and AI systems.</p>
   <div class="grid g2">
-    <a class="card" href="/writing/consolidating-spark-jobs/"><span class="repo">November 2026 · 4 min read</span><h3>185 Airflow DAG files to 97: consolidating a lakehouse&#x27;s Spark jobs</h3><p>One Spark job per table had turned a lakehouse refresh into a 2-3 hour wait. Folding them into a few config-driven jobs took it to minutes.</p></a>
-    <a class="card" href="/writing/iceberg-merge-pruning/"><span class="repo">November 2026 · 3 min read</span><h3>Why my Iceberg MERGE read 930 million rows to write 316 thousand</h3><p>The MERGE condition matched on year, month and day, so it looked partition-scoped. Spark only prunes on that at runtime, and only sometimes.</p></a>
-    <a class="card" href="/writing/spark-pushdown-assertion/"><span class="repo">November 2026 · 3 min read</span><h3>A Spark 3.5 optimizer crash that a cache was hiding</h3><p>An internal Spark error on every retry, from a nullif() join key. A persist() had hidden it, and unit tests on in-memory frames could never catch it.</p></a>
-    <a class="card" href="/writing/ignore-corrupt-files/"><span class="repo">November 2026 · 3 min read</span><h3>ignoreCorruptFiles turned a network blip into a missing day</h3><p>Backfills kept missing days and every run said OK. A Spark option meant for damaged files was skipping good files on transient errors.</p></a>
-    <a class="card" href="/writing/pagerduty-ingestion/"><span class="repo">November 2026 · 3 min read</span><h3>Ingesting 10,000 PagerDuty incidents without fighting Spark</h3><p>A per-incident API crawl took up to two hours, then the first full run broke Spark&#x27;s 128 MB message limit. Bulk endpoints, a self-check and less Spark fixed both.</p></a>
-    <a class="card" href="/writing/text2sql-evals/"><span class="repo">November 2026 · 5 min read</span><h3>How I evaluate a Text2SQL agent</h3><p>Gold sets with traps, a hold-out split you never tune on, grading the answer instead of the SQL, and why the best failure is a refusal.</p></a>
+    <a class="card" href="/writing/consolidating-spark-jobs/"><span class="repo">November 2026 · 4 min read</span><h3>Consolidating 185 Airflow DAG files into 97</h3><p>Our lakehouse refresh took two to three hours, mostly spent starting Spark applications. Folding them into a few config-driven jobs got it down to minutes.</p></a>
+    <a class="card" href="/writing/iceberg-merge-pruning/"><span class="repo">November 2026 · 3 min read</span><h3>An Iceberg MERGE that read 930 million rows to write 316 thousand</h3><p>The merge condition matched on year, month and day, so I assumed it only touched one day. Spark was reading the whole table every hour.</p></a>
+    <a class="card" href="/writing/spark-pushdown-assertion/"><span class="repo">November 2026 · 3 min read</span><h3>A Spark 3.5 optimizer crash that a cache was hiding</h3><p>A production job failed on every retry with an internal Spark error. The cause was a nullif() join key, and a persist() had been hiding it.</p></a>
+    <a class="card" href="/writing/ignore-corrupt-files/"><span class="repo">November 2026 · 3 min read</span><h3>How ignoreCorruptFiles hid missing days in our lakehouse</h3><p>Backfills kept losing days while every run reported success. A Spark read option was skipping files on transient errors.</p></a>
+    <a class="card" href="/writing/pagerduty-ingestion/"><span class="repo">November 2026 · 3 min read</span><h3>Ingesting our PagerDuty history in 18 minutes instead of two hours</h3><p>The first version crawled the API one incident at a time for up to two hours. The faster one then ran into Spark&#x27;s 128 MB message limit.</p></a>
+    <a class="card" href="/writing/text2sql-evals/"><span class="repo">November 2026 · 4 min read</span><h3>How I evaluate a Text2SQL agent</h3><p>Hand-written answers with a trap in each question, a hold-out set I never tune on, and what one run of my semantic-layer lab showed.</p></a>
   </div>
 </div></section>
 
@@ -185,16 +185,16 @@ footer .links a{overflow-wrap:anywhere}
   <h2>Experience</h2>
   <p class="sub">Joyent, Inc. (Samsung Cloud), Sunnyvale, CA</p>
   <ul class="timeline">
-    <li><span class="role">Data Platform Technical Lead</span><span class="when">Nov 2026 – Present</span><div class="org">Lead the data platform team: the managed Spark service and the Internal Analytics lakehouse and APIs.</div></li>
-    <li><span class="role">Senior Data Platform Engineer</span><span class="when">Feb 2024 – Nov 2026</span><div class="org">Built the Iceberg lakehouse, its REST API and the Text2SQL work; ran on-call and moved CI/CD to GitHub Actions.</div></li>
-    <li><span class="role">Generalist Engineer</span><span class="when">Aug 2021 – Feb 2024</span><div class="org">Joined the managed Spark service in its first month; before that, tooling for Joyent's storage cluster.</div></li>
-    <li><span class="role">M.S., Computer Science</span><span class="when">2019 – 2021</span><div class="org">Syracuse University. B.Tech., SRM Institute of Science and Technology. Best Paper Award, ICIOT 2019.</div></li>
+    <li><span class="role">Data Platform Technical Lead</span><span class="when">Nov 2026 - Present</span><div class="org">Lead the data platform team: the managed Spark service and the Internal Analytics lakehouse and APIs.</div></li>
+    <li><span class="role">Senior Data Platform Engineer</span><span class="when">Feb 2024 - Nov 2026</span><div class="org">Built the Iceberg lakehouse, its REST API and the Text2SQL work; ran on-call and moved CI/CD to GitHub Actions.</div></li>
+    <li><span class="role">Generalist Engineer</span><span class="when">Aug 2021 - Feb 2024</span><div class="org">Joined the managed Spark service in its first month; before that, tooling for Joyent's storage cluster.</div></li>
+    <li><span class="role">M.S., Computer Science</span><span class="when">2019 - 2021</span><div class="org">Syracuse University. B.Tech., SRM Institute of Science and Technology. Best Paper Award, ICIOT 2019.</div></li>
   </ul>
 </div></section>
 
 <section><div class="wrap">
   <h2>Toolbox</h2>
-  <p class="sub">What I reach for day to day.</p>
+  <p class="sub">The tools I use most.</p>
   <dl class="skills">
     <dt>AI and LLM</dt><dd>Text2SQL, LLM evaluation, Model Context Protocol (MCP), RAG, prompt design, OPA guardrails</dd>
     <dt>Data</dt><dd>Apache Spark, Apache Iceberg, Trino, Apache Airflow, DuckDB, Kafka, Flink, Apache Superset</dd>
